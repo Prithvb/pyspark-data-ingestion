@@ -1,0 +1,98 @@
+#importing libraries, pyspark modules and glue modules
+from pyspark.context import SparkContext
+import pyspark.sql.functions as f
+from pyspark.sql.types import StringType
+from awsglue.utils import getResolvedOptions
+from awsglue.context import GlueContext
+from awsglue.dynamicframe import DynamicFrame
+from awsglue.job import Job
+from datetime import datetime
+from pyspark.sql.functions import to_date, date_format
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number,lit
+
+#Initialize contexts and session
+spark_context = SparkContext.getOrCreate()
+glue_context = GlueContext(spark_context)
+session = glue_context.spark_session
+
+
+#Parameters
+glue_db = "source-team4"
+glue_tbl = "sampledata_csv"
+#s3_write_path = "s3://mg-nab-source/landing/team4/"
+s3_write_path = "s3://mg-nab-source/team4/sample-csv/parquet-file/"
+s3_write_error="s3://mg-nab-source/team4/sample-csv/error-csv/"
+
+
+#reading data to glue dynamic frame
+dynamic_frame_read = glue_context.create_dynamic_frame.from_catalog(database = glue_db, table_name = glue_tbl)
+
+
+#Convert dynamic frame to data frame to use standard pyspark functions
+df1 = dynamic_frame_read.toDF()
+df2 = dynamic_frame_read.toDF()
+
+
+#data transformation
+
+df1=df1.withColumn("jobID", row_number().over(Window().orderBy(lit('A'))))
+df1=df1.withColumn("Date",to_date("Date","dd-MM-yyyy"))
+
+#renaming the columns
+df1 = df1.withColumnRenamed('Name','Full Name')
+df1 = df1.withColumn("Name", df1["Full Name"].cast(StringType()))
+df1 = df1.withColumnRenamed('open','opn')
+df1 = df1.withColumn("open", df1["opn"].cast(StringType()))
+df1=df1.na.drop()
+df1=df1.withColumn("FinalDatein Words",date_format('Date',"yyyy MMM dd"))
+df1=df1.drop('Close')
+df1=df1.drop('Name')
+df1=df1.withColumn("current_date", f.current_date())
+
+df2 = df2.filter(f.col("Volume").isNull())
+
+#assigning variables
+data_frame1 = df1
+
+data_frame2 = df2
+
+
+
+#data_frame1.show()
+
+#data_frame2.show()
+
+#data_frame1 = data_frame1.repartition(1)
+
+#data_frame2 = data_frame2.repartition(1)
+
+
+
+#Convert back to dynamic frame
+dynamic_frame_write1 = DynamicFrame.fromDF(data_frame1, glue_context, "dynamic_frame_write")
+dynamic_frame_write2 = DynamicFrame.fromDF(data_frame2, glue_context, "dynamic_frame_write")
+
+
+#Write data back to S3 in parquet format
+glue_context.write_dynamic_frame.from_options(
+frame = dynamic_frame_write1,
+connection_type = "s3",
+connection_options = {
+"path": s3_write_path,
+},
+format = "parquet"
+)
+
+#Write error back to S3 in csv format
+glue_context.write_dynamic_frame.from_options(
+frame = dynamic_frame_write2,
+connection_type = "s3",
+connection_options = {
+"path": s3_write_error,
+},
+format = "csv"
+)
+
+#Log end time
+dt_end = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
